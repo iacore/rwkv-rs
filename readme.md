@@ -4,6 +4,11 @@
 First, dump the model with inspectxxxx.py
 TK
 
+token
+
+20B_tokenizer.json
+
+
 Then,
 
 ```rs

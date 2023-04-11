@@ -8,8 +8,10 @@ edition = "2021"
 [dependencies]
 dfdx = { version = "0.11.1", features = ["safetensors"] }
 memmap2 = "0.5.10"
+rand = "0.8.5"
 safetensors = "0.3.0"
 thiserror = "1.0.40"
+tokenizers = "0.13.3"
 
 [dev-dependencies]
 anyhow = "1.0.70"

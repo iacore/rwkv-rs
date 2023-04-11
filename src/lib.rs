@@ -6,6 +6,7 @@ use dfdx::prelude::*;
 
 use ::safetensors::SafeTensors;
 use memmap2::MmapOptions;
+use rand::distributions::Uniform;
 use Tensor1D as V;
 use Tensor2D as M;
 
@@ -276,8 +277,58 @@ impl<
         let x = self.ln_out.layer_norm(x);
         let x = matmul(self.head.clone(), x); // "attention" head
 
-        (softmax(x), state)
+        // softmax but not quite
+        let e_x = exp(x.clone() - x.max().broadcast());
+        let probs = e_x.clone() / e_x.sum().broadcast();
+
+        (probs, state)
     }
+}
+
+/// Get the token
+///
+/// # Params
+/// top_p: only select `top_p` percentile (0 to 1)
+///
+/// # Recommended values
+/// temperature=1.0
+/// top_p=0.85
+pub fn sample_token<const N_VOCAB: usize>(
+    rng: &mut impl rand::Rng,
+    probs: V<N_VOCAB>,
+    temperature: f32,
+    top_p: f32,
+) -> usize {
+    // probably can go faster by sorting partially
+    let mut sorted_probs: Vec<(usize, f32)> = probs.array().into_iter().enumerate().collect();
+    sorted_probs.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
+    let mut acc = 0.;
+    let mut cutoff = 0;
+    for (i, p) in sorted_probs.iter() {
+        acc += p;
+        if acc > top_p {
+            break;
+        } else {
+            cutoff = *i;
+        }
+    }
+    let temperature_inv = 1. / temperature;
+    let considered = &mut sorted_probs[..cutoff];
+    for (_, p) in considered {
+        *p = p.powf(temperature_inv);
+    }
+    let considered = &mut sorted_probs[..cutoff];
+    let sum_p: f32 = considered.iter().map(|(_, p)| *p).sum();
+    let cutoff = rng.sample(Uniform::new(0., 1.)) * sum_p;
+
+    let mut acc = 0.;
+    for &(i, p) in considered.iter() {
+        acc += p;
+        if acc > cutoff {
+            return i;
+        }
+    }
+    considered[considered.len() - 1].0
 }
 
 #[derive(Debug, thiserror::Error)]
