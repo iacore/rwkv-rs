@@ -13,6 +13,12 @@ fn mix<const N: usize>(mix: V<N>, p0: V<N>, p1: V<N>) -> V<N> {
     p1 * mix.clone() + p0 * (-mix + 1.)
 }
 
+fn matmul<const N0: usize, const N1: usize>(lns: M<N0, N1>, rhs: V<N1>) -> V<N0> {
+    let rhs = rhs.reshape::<Rank2<N1, 1>>();
+    let res: M<N0, 1> = lns.matmul(rhs);
+    res.reshape()
+}
+
 #[derive(Clone)]
 pub struct ATT<const N: usize> {
     pub decay: V<N>,   // time_decay
@@ -207,10 +213,7 @@ impl<
         }
     }
 
-    pub fn load_safetensors<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-    ) -> Result<(), dfdx::tensor::safetensors::Error> {
+    pub fn load_safetensors<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
         let f = std::fs::File::open(path)?;
         let buffer = unsafe { MmapOptions::new().map(&f)? };
         let xs = SafeTensors::deserialize(&buffer)?;
@@ -277,17 +280,23 @@ impl<
     }
 }
 
-fn matmul<const N0: usize, const N1: usize>(lns: M<N0, N1>, rhs: V<N1>) -> V<N0> {
-    let rhs = rhs.reshape::<Rank2<N1, 1>>();
-    let res: M<N0, 1> = lns.matmul(rhs);
-    res.reshape()
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub enum Error {
+    SafeTensorError(#[from] ::safetensors::SafeTensorError),
+    #[error("tensor size mismatch, expected={expected:?} actual={actual:?}")]
+    MismatchedDimension {
+        expected: Vec<usize>,
+        actual: Vec<usize>,
+    },
+    IoError(#[from] std::io::Error),
 }
 
 fn _cp_block<const N_EMBED: usize, const N_EMBED_TIMES_4: usize>(
     xs: &SafeTensors,
     prefix: &str,
     block: &mut RWKVBlock<N_EMBED, N_EMBED_TIMES_4>,
-) -> Result<(), dfdx::tensor::safetensors::Error> {
+) -> Result<(), Error> {
     let RWKVBlock { ln1, att, ln2, ffn } = block;
 
     _cp_ln(xs, &format!("{prefix}.ln1"), ln1)?;
@@ -334,11 +343,7 @@ fn _cp_block<const N_EMBED: usize, const N_EMBED_TIMES_4: usize>(
     Ok(())
 }
 
-fn _cp_ln<const N: usize>(
-    xs: &SafeTensors,
-    prefix: &str,
-    ln_in: &mut LN<N>,
-) -> Result<(), dfdx::tensor::safetensors::Error> {
+fn _cp_ln<const N: usize>(xs: &SafeTensors, prefix: &str, ln_in: &mut LN<N>) -> Result<(), Error> {
     _cp(xs, &format!("{prefix}.weight"), &mut ln_in.weight)?;
     _cp(xs, &format!("{prefix}.bias"), &mut ln_in.bias)?;
     Ok(())
@@ -349,7 +354,7 @@ fn _cp<S: Shape, D: CopySlice<f32>, T>(
     tensors: &SafeTensors,
     tensor_name: &str,
     tensor: &mut Tensor<S, f32, D, T>,
-) -> Result<(), dfdx::tensor::safetensors::Error> {
+) -> Result<(), Error> {
     let tensor_view = tensors.tensor(tensor_name)?;
 
     let shape_expected: Vec<usize> = tensor_view
@@ -377,7 +382,7 @@ unsafe fn align_to_f32(data: &[u8]) -> &[f32] {
 pub type RWKV_430m = RWKV<24, 1024, 4096, 50277>;
 
 #[test]
-fn test_load_model() -> Result<(), dfdx::tensor::safetensors::Error> {
+fn test_load_model() -> Result<(), Error> {
     let dev: Cpu = Default::default();
     let mut model = RWKV_430m::zeros(&dev);
     model.load_safetensors("RWKV-4-Pile-430M-20220808-8066.safetensors")?;

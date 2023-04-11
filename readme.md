@@ -13,3 +13,4 @@ TK
 ## To do
 
 - replace assert with error
+- remove device jankyness
