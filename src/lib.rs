@@ -33,6 +33,16 @@ pub struct ATTState<const N: usize> {
     pub den: V<N>,
 }
 
+impl<const N: usize> ATTState<N> {
+    pub fn zeros(dev: &Cpu) -> Self {
+        Self {
+            x: dev.zeros(),
+            num: dev.zeros(),
+            den: dev.zeros(),
+        }
+    }
+}
+
 impl<const N: usize> ATT<N> {
     pub fn zeros(dev: &Cpu) -> Self {
         Self {
@@ -59,9 +69,9 @@ impl<const N: usize> ATT<N> {
         let wr = self.wr.clone();
         let wout = self.wout.clone();
 
-        let k = matmul(mix(mix_k, last.x.clone(), x.clone()), wk);
-        let v = matmul(mix(mix_v, last.x.clone(), x.clone()), wv);
-        let r = matmul(mix(mix_r, last.x, x.clone()), wr);
+        let k = matmul(wk, mix(mix_k, last.x.clone(), x.clone()));
+        let v = matmul(wv, mix(mix_v, last.x.clone(), x.clone()));
+        let r = matmul(wr, mix(mix_r, last.x, x.clone()));
 
         let _0 = exp(bonus + k.clone());
 
@@ -73,7 +83,7 @@ impl<const N: usize> ATT<N> {
         let num = _1.clone() * last.num + _2.clone() * v;
         let den = _1 * last.den + _2;
 
-        (matmul(rwkv, wout), ATTState { x, num, den })
+        (matmul(wout, rwkv), ATTState { x, num, den })
     }
 }
 
@@ -81,8 +91,8 @@ impl<const N: usize> ATT<N> {
 pub struct FFN<const N: usize, const N1: usize> {
     pub mix_k: V<N>,  // time_mix_k
     pub mix_r: V<N>,  // time_mix_r
-    pub wk: M<N, N1>, // key.weight
-    pub wv: M<N1, N>, // value.weight
+    pub wk: M<N1, N>, // key.weight
+    pub wv: M<N, N1>, // value.weight
     pub wr: M<N, N>,  // receptance.weight
 }
 
@@ -103,9 +113,9 @@ impl<const N: usize, const N1: usize> FFN<N, N1> {
         let wv = self.wv.clone();
         let wr = self.wr.clone();
 
-        let k = matmul(mix(mix_k, last_x.clone(), x.clone()), wk);
-        let r = matmul(mix(mix_r, last_x, x.clone()), wr);
-        let vk = matmul(maximum(k, dev.zeros()).square(), wv);
+        let k = matmul(wk, mix(mix_k, last_x.clone(), x.clone()));
+        let r = matmul(wr, mix(mix_r, last_x, x.clone()));
+        let vk = matmul(wv, maximum(k, dev.zeros()).square());
 
         (sigmoid(r) * vk, x)
     }
@@ -124,6 +134,12 @@ impl<const N: usize> LN<N> {
             bias: dev.zeros(),
         }
     }
+
+    pub fn layer_norm(&self, x: V<N>) -> V<N> {
+        let w = self.weight.clone();
+        let b = self.bias.clone();
+        x.normalize(0.) * w + b
+    }
 }
 
 #[derive(Clone)]
@@ -141,6 +157,21 @@ impl<const N_EMBED: usize, const N_EMBED_TIMES_4: usize> RWKVBlock<N_EMBED, N_EM
             att: ATT::zeros(dev),
             ln2: LN::zeros(dev),
             ffn: FFN::zeros(dev),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RWKVState<const N: usize> {
+    pub att_state: ATTState<N>,
+    pub ffn_state: V<N>,
+}
+
+impl<const N: usize> RWKVState<N> {
+    pub fn zeros(dev: &Cpu) -> Self {
+        Self {
+            att_state: ATTState::zeros(dev),
+            ffn_state: dev.zeros(),
         }
     }
 }
@@ -201,6 +232,55 @@ impl<
 
         Ok(())
     }
+
+    pub fn forward(
+        &self,
+        dev: &Cpu,
+        token: usize,
+        state: RWKVState<N_EMBED>,
+    ) -> (V<N_VOCAB>, RWKVState<N_EMBED>) {
+        let x = self.emb.clone().select(dev.tensor(token));
+        let x = self.ln_in.layer_norm(x);
+
+        let (x, state) = self.blocks.iter().fold(
+            (x, state),
+            |(
+                x,
+                RWKVState {
+                    att_state,
+                    ffn_state,
+                },
+            ),
+             block| {
+                let x_ = block.ln1.layer_norm(x.clone());
+                let (dx, att_state) = block.att.forward(x_, att_state);
+                let x = x + dx;
+
+                let x_ = block.ln2.layer_norm(x.clone());
+                let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state);
+                let x = x + dx;
+
+                (
+                    x,
+                    RWKVState {
+                        att_state,
+                        ffn_state,
+                    },
+                )
+            },
+        );
+
+        let x = self.ln_out.layer_norm(x);
+        let x = matmul(self.head.clone(), x); // "attention" head
+
+        (softmax(x), state)
+    }
+}
+
+fn matmul<const N0: usize, const N1: usize>(lns: M<N0, N1>, rhs: V<N1>) -> V<N0> {
+    let rhs = rhs.reshape::<Rank2<N1, 1>>();
+    let res: M<N0, 1> = lns.matmul(rhs);
+    res.reshape()
 }
 
 fn _cp_block<const N_EMBED: usize, const N_EMBED_TIMES_4: usize>(
@@ -270,7 +350,21 @@ fn _cp<S: Shape, D: CopySlice<f32>, T>(
     tensor_name: &str,
     tensor: &mut Tensor<S, f32, D, T>,
 ) -> Result<(), dfdx::tensor::safetensors::Error> {
-    let data = &tensors.tensor(tensor_name)?.data();
+    let tensor_view = tensors.tensor(tensor_name)?;
+
+    let shape_expected: Vec<usize> = tensor_view
+        .shape()
+        .into_iter()
+        .cloned()
+        .filter(|x| *x != 1)
+        .collect();
+
+    let shape_actual = &tensor.shape();
+    for i in 0..S::NUM_DIMS {
+        assert_eq!(shape_actual.concrete()[i], shape_expected[i]);
+    }
+
+    let data = tensor_view.data();
     tensor.copy_from(unsafe { align_to_f32(data) });
     Ok(())
 }
