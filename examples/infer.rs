@@ -28,12 +28,12 @@ fn main() -> anyhow::Result<()> {
     print!("{prompt}");
     loop {
         if let Some(probs_taken) = probs.take() {
-            let token_id = sample_token(&mut rng, probs_taken, 1.0, 0.85);
+            let token_id = sample_token(&dev, &mut rng, probs_taken, 1.0, 0.85);
             // end of text
             if token_id == 0 {
                 break;
             }
-            let word = tokenizer.decode(vec![token_id as u32], false).unwrap();
+            let word = tokenizer.decode(vec![token_id as u32], true).unwrap();
             print!("{word}");
 
             let (probs_, state_) = model.forward(&dev, token_id, state.clone());

@@ -294,41 +294,52 @@ impl<
 /// temperature=1.0
 /// top_p=0.85
 pub fn sample_token<const N_VOCAB: usize>(
+    dev: &Cpu,
     rng: &mut impl rand::Rng,
     probs: V<N_VOCAB>,
     temperature: f32,
     top_p: f32,
 ) -> usize {
-    // probably can go faster by sorting partially
-    let mut sorted_probs: Vec<(usize, f32)> = probs.array().into_iter().enumerate().collect();
-    sorted_probs.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
-    let mut acc = 0.;
-    let mut cutoff = 0;
-    for (i, p) in sorted_probs.iter() {
-        acc += p;
-        if acc > top_p {
-            break;
+    let mut sorted_probs: [f32; N_VOCAB] = probs.array();
+    sorted_probs.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+    let mut cum: [f32; N_VOCAB] = [0.; N_VOCAB];
+    for i in 0..cum.len() {
+        if i == 0 {
+            cum[i] = sorted_probs[i];
         } else {
-            cutoff = *i;
+            cum[i] = sorted_probs[i] + cum[i - 1];
         }
     }
-    let temperature_inv = 1. / temperature;
-    let considered = &mut sorted_probs[..cutoff];
-    for (_, p) in considered {
-        *p = p.powf(temperature_inv);
-    }
-    let considered = &mut sorted_probs[..cutoff];
-    let sum_p: f32 = considered.iter().map(|(_, p)| *p).sum();
+
+    let cutoff_i = cum
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| *x > &top_p)
+        .max_by_key(|(i, _)| *i)
+        .map(|(i, _)| i)
+        .unwrap();
+    let cutoff = sorted_probs[cutoff_i];
+
+    let probs = probs
+        .lt(&dev.tensor(cutoff).broadcast())
+        .choose(dev.tensor(0.).broadcast(), probs);
+
+    let probs = powf(probs, 1.0 / temperature);
+
+    let sum_p: f32 = probs.clone().sum().array();
+
     let cutoff = rng.sample(Uniform::new(0., 1.)) * sum_p;
 
     let mut acc = 0.;
-    for &(i, p) in considered.iter() {
+    let array = probs.array();
+    for (i, p) in array.iter().enumerate() {
         acc += p;
         if acc > cutoff {
             return i;
         }
     }
-    considered[considered.len() - 1].0
+    unreachable!("acc={acc} {array:?}")
 }
 
 #[derive(Debug, thiserror::Error)]
