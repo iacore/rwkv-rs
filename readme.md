@@ -1,3 +1,8 @@
+Warning: broken
+
+ML in Rust is a waste of time
+Python is much better
+
 ## Usage
 
 1. get model params
