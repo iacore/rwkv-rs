@@ -441,11 +441,9 @@ source = "git+https://github.com/coreylowman/dfdx.git?rev=6eb8698#6eb86983d133ee
 dependencies = [
  "cudarc",
  "matrixmultiply",
- "memmap2",
  "num-traits",
  "rand",
  "rand_distr",
- "safetensors",
 ]
 
 [[package]]
