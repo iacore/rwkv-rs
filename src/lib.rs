@@ -7,6 +7,7 @@ use dfdx::prelude::*;
 use ::safetensors::SafeTensors;
 use memmap2::MmapOptions;
 use rand::distributions::Uniform;
+use tracing::trace;
 use Tensor1D as V;
 use Tensor2D as M;
 
@@ -145,7 +146,8 @@ impl<const N: usize> LN<N> {
     pub fn layer_norm(&self, x: V<N>) -> V<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
-        x.normalize(0.) * w + b
+        let x_off = x.clone() - x.mean().broadcast();
+        ((x_off.clone() / x_off.square().mean().sqrt().broadcast()) * w) + b
     }
 }
 
@@ -181,6 +183,18 @@ impl<const N: usize> RWKVState<N> {
             ffn_state: dev.zeros(),
         }
     }
+}
+
+fn summarize<const N: usize>(x: &V<N>) -> String {
+    format!(
+        "[{}, {}, {}, ..., {}, {}, {}]",
+        x[[0]],
+        x[[1]],
+        x[[2]],
+        x[[N - 3]],
+        x[[N - 2]],
+        x[[N - 1]]
+    )
 }
 
 #[derive(Clone)]
@@ -243,8 +257,11 @@ impl<
         token: usize,
         state: RWKVState<N_EMBED>,
     ) -> (V<N_VOCAB>, RWKVState<N_EMBED>) {
+        trace!(?token, "token");
         let x = self.emb.clone().select(dev.tensor(token));
+        trace!(x = summarize(&x), "after emb");
         let x = self.ln_in.layer_norm(x);
+        trace!(x = summarize(&x), "after ln_in");
 
         let (x, state) = self.blocks.iter().fold(
             (x, state),
@@ -257,12 +274,16 @@ impl<
             ),
              block| {
                 let x_ = block.ln1.layer_norm(x.clone());
+                trace!(x = summarize(&x_), "after block.ln1");
                 let (dx, att_state) = block.att.forward(x_, att_state);
                 let x = x + dx;
+                trace!(x = summarize(&x), "after block.att");
 
                 let x_ = block.ln2.layer_norm(x.clone());
+                trace!(x = summarize(&x_), "after block.ln2");
                 let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state);
                 let x = x + dx;
+                trace!(x = summarize(&x), "after block.ffn");
 
                 (
                     x,
@@ -442,11 +463,3 @@ unsafe fn align_to_f32(data: &[u8]) -> &[f32] {
 }
 
 pub type RWKV_430m = RWKV<24, 1024, 4096, 50277>;
-
-#[test]
-fn test_load_model() -> Result<(), Error> {
-    let dev: Cpu = Default::default();
-    let mut model = RWKV_430m::zeros(&dev);
-    model.load_safetensors("RWKV-4-Pile-430M-20220808-8066.safetensors")?;
-    Ok(())
-}

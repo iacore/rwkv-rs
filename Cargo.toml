@@ -6,12 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dfdx = { version = "0.11.1", features = ["safetensors"] }
+dfdx = { version = "0.11.1", git="https://github.com/coreylowman/dfdx.git", rev="6eb8698", features = ["safetensors"] }
 memmap2 = "0.5.10"
 rand = "0.8.5"
 safetensors = "0.3.0"
 thiserror = "1.0.40"
 tokenizers = "0.13.3"
+tracing = "0.1.37"
 
 [dev-dependencies]
 anyhow = "1.0.70"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
