@@ -147,7 +147,7 @@ impl<const N: usize> LN<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
         let x_off = x.clone() - x.clone().mean().broadcast();
-        let std = x_off.clone().stddev(0.0);
+        let std = x.clone().stddev(0.0);
         // trace!("x={:?} std={:.20}", x.array(), std.array());
         let x_normalized = x_off.clone() / std.broadcast();
         (x_normalized * w) + b
@@ -277,16 +277,16 @@ impl<
             ),
              block| {
                 let x_ = block.ln1.layer_norm(x.clone());
-                trace!(x = summarize(&x_), "after block.ln1");
+                trace!(x = summarize(&x_), "after ln1");
                 let (dx, att_state) = block.att.forward(x_, att_state);
                 let x = x + dx;
-                trace!(x = summarize(&x), "after block.att");
+                trace!(x = summarize(&x), "after att");
 
                 let x_ = block.ln2.layer_norm(x.clone());
-                trace!(x = summarize(&x_), "after block.ln2");
+                trace!(x = summarize(&x_), "after ln2");
                 let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state);
                 let x = x + dx;
-                trace!(x = summarize(&x), "after block.ffn");
+                trace!(x = summarize(&x), "after ffn");
 
                 (
                     x,
@@ -299,14 +299,36 @@ impl<
         );
 
         let x = self.ln_out.layer_norm(x);
+        trace!(x = summarize(&x), "after ln_out");
         let x = matmul(self.head.clone(), x); // "attention" head
+        trace!(x = summarize(&x), "after head");
 
         // softmax but not quite
-        let e_x = exp(x.clone() - x.max().broadcast());
-        let probs = e_x.clone() / e_x.sum().broadcast();
+        let probs = x.softmax();
+
+        // let mut sorted_probs = probs.array();
+        // sorted_probs.sort_by(|a, b| b.total_cmp(a));
+        // trace!(probs = summarize(&probs), "sorted_probs={:?}", &sorted_probs[0..10]);
+
+        let a = probs.array();
+        let sorted_ids = argsort_desc(&a);
+        let max10_ids: Vec<usize> = sorted_ids
+            .into_iter()
+            .enumerate()
+            .filter(|(i, shi)| *shi < 10)
+            .map(|(i, _)| i)
+            .collect();
+        trace!(?max10_ids);
 
         (probs, state)
     }
+}
+
+/// np.argsort + reverse
+pub fn argsort_desc<T: PartialOrd>(data: &[T]) -> Vec<usize> {
+    let mut indices = (0..data.len()).collect::<Vec<_>>();
+    indices.sort_by(|&j, &i| data[i].partial_cmp(&data[j]).unwrap());
+    indices
 }
 
 /// Get the token
