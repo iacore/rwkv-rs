@@ -146,8 +146,11 @@ impl<const N: usize> LN<N> {
     pub fn layer_norm(&self, x: V<N>) -> V<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
-        let x_off = x.clone() - x.mean().broadcast();
-        ((x_off.clone() / x_off.square().mean().sqrt().broadcast()) * w) + b
+        let x_off = x.clone() - x.clone().mean().broadcast();
+        let std = x_off.clone().stddev(0.0);
+        // trace!("x={:?} std={:.20}", x.array(), std.array());
+        let x_normalized = x_off.clone() / std.broadcast();
+        (x_normalized * w) + b
     }
 }
 
