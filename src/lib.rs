@@ -315,7 +315,7 @@ impl<
         let max10_ids: Vec<usize> = sorted_ids
             .into_iter()
             .enumerate()
-            .filter(|(i, shi)| *shi < 10)
+            .filter(|(_, shi)| *shi < 10)
             .map(|(i, _)| i)
             .collect();
         trace!(?max10_ids);
