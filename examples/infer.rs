@@ -1,4 +1,5 @@
 use std::{fs::File, io::Write};
+use std::env;
 
 use anyhow::Context;
 use dfdx::prelude::*;
@@ -13,16 +14,21 @@ unsafe fn cast_slice_to_u8(data: &[f32]) -> &[u8] {
 fn main() -> anyhow::Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(File::create("target/rwkv.log")?);
     tracing_subscriber::fmt()
-        .with_ansi(false)
         .without_time()
         .compact()
         .with_env_filter(EnvFilter::new("none,rwkv=trace"))
         .with_writer(non_blocking)
         .init();
+    let n = env::var("NUMPY_MAGIC")?;
+    let n: f32 = n.parse()?;
+
+    // todo: arg
+    // magic, temp, top_p
+
 
     let tokenizer = Tokenizer::from_file("20B_tokenizer.json").unwrap();
-
-    let prompt = "In a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
+    //let prompt = "In a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
+    let prompt = "In a shocking finding, scientist discovered";
 
     let dev: Cpu = Default::default();
     let mut state = RWKVState::zeros(&dev);
@@ -36,21 +42,17 @@ fn main() -> anyhow::Result<()> {
     let mut probs = None;
     for &token in encoded.get_ids() {
         let (probs_, state_) = model.forward(&dev, token as usize, state.clone());
-        state = state_;
         probs = Some(probs_);
     }
-
-    File::create("probs.raw")?
-        .write_all(unsafe { cast_slice_to_u8(&probs.as_ref().unwrap().array()) })?;
     // File::create("state.ffn_state.raw")?
     //     .write_all(unsafe { cast_slice_to_u8(&state.ffn_state.array()) })?;
 
     let mut rng = rand::thread_rng();
 
     print!("{prompt}");
-    loop {
+    for i in 0..16 {
         if let Some(probs_taken) = probs.take() {
-            let token_id = sample_token(&dev, &mut rng, probs_taken, 1.0, 0.85);
+            let token_id = sample_token(&dev, &mut rng, probs_taken, 0.9, 0.85);
             // end of text
             if token_id == 0 {
                 break;
@@ -63,6 +65,7 @@ fn main() -> anyhow::Result<()> {
             probs = Some(probs_);
         }
     }
+    println!();
 
     Ok(())
 }

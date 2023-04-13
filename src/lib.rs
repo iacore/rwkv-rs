@@ -135,6 +135,10 @@ pub struct LN<const N: usize> {
     pub bias: V<N>,
 }
 
+/// tested with N_EMBED=1024 N_LAYER=24
+// 0.000000049 to 0.000000063
+pub static mut NUMPY_MAGIC_EPSILON: f32 = 0.000000053;
+
 impl<const N: usize> LN<N> {
     pub fn zeros(dev: &Cpu) -> Self {
         Self {
@@ -146,11 +150,8 @@ impl<const N: usize> LN<N> {
     pub fn layer_norm(&self, x: V<N>) -> V<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
-        let x_off = x.clone() - x.clone().mean().broadcast();
-        let std = x.clone().stddev(0.0);
-        // trace!("x={:?} std={:.20}", x.array(), std.array());
-        let x_normalized = x_off.clone() / std.broadcast();
-        (x_normalized * w) + b
+        
+        (x.clone() - x.clone().mean().broadcast()) * w / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast() + b
     }
 }
 
