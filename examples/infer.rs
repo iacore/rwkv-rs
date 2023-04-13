@@ -14,6 +14,7 @@ unsafe fn cast_slice_to_u8(data: &[f32]) -> &[u8] {
 fn main() -> anyhow::Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(File::create("target/rwkv.log")?);
     tracing_subscriber::fmt()
+        .with_ansi(false)
         .without_time()
         .compact()
         .with_env_filter(EnvFilter::new("none,rwkv=trace"))
