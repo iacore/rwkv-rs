@@ -23,3 +23,7 @@ cargo run --example infer --release
 ***
 
 In theory, using bigger RWKV is also possible if you got enough memory. Just remember to change the Rust model type and model path in `examples/infer.rs`.
+
+## further optimization
+
+\>80% of the time is spent on matrix multiplication. Using faster matrix multiplication code will help a lot.
