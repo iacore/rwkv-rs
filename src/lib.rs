@@ -6,7 +6,6 @@ use dfdx::prelude::*;
 
 use ::safetensors::SafeTensors;
 use memmap2::MmapOptions;
-use rand::distributions::Uniform;
 use Tensor1D as V;
 use Tensor2D as M;
 
@@ -94,6 +93,16 @@ impl<const N: usize> ATT<N> {
     }
 }
 
+impl<const N: usize> Module<(V<N>, ATTState<N>)> for ATT<N> {
+    type Output = (V<N>, ATTState<N>);
+
+    type Error = ();
+
+    fn try_forward(&self, input: (V<N>, ATTState<N>)) -> Result<Self::Output, Self::Error> {
+        Ok(self.forward(input.0, input.1))
+    }
+}
+
 #[derive(Clone)]
 pub struct FFN<const N: usize, const N1: usize> {
     pub mix_k: V<N>,  // time_mix_k
@@ -129,6 +138,16 @@ impl<const N: usize, const N1: usize> FFN<N, N1> {
     }
 }
 
+impl<const N: usize, const N1: usize> Module<(V<N>, V<N>)> for FFN<N, N1> {
+    type Output = (V<N>, V<N>);
+
+    type Error = ();
+
+    fn try_forward(&self, input: (V<N>, V<N>)) -> Result<Self::Output, Self::Error> {
+        Ok(self.forward(input.0, input.1))
+    }
+}
+
 #[derive(Clone)]
 pub struct LN<const N: usize> {
     pub weight: V<N>,
@@ -151,6 +170,16 @@ impl<const N: usize> LN<N> {
         let b = self.bias.clone();
 
         x.normalize(STD_EPSILON) * w + b
+    }
+}
+
+impl<const N: usize> Module<V<N>> for LN<N> {
+    type Output = V<N>;
+
+    type Error = ();
+
+    fn try_forward(&self, input: V<N>) -> Result<Self::Output, Self::Error> {
+        Ok(self.layer_norm(input))
     }
 }
 
@@ -258,25 +287,29 @@ impl<
         let x = self.emb.clone().select(Cpu::default().tensor(token));
         let x = self.ln_in.layer_norm(x);
 
-        let x = self.blocks.iter().zip(&mut states).fold(x, |x, (block, state)| {
-            let RWKVBlockState {
-                att_state,
-                ffn_state,
-            } = state;
-            let x_ = block.ln1.layer_norm(x.clone());
-            let (dx, att_state) = block.att.forward(x_, att_state.clone());
-            let x = x + dx;
+        let x = self
+            .blocks
+            .iter()
+            .zip(&mut states)
+            .fold(x, |x, (block, state)| {
+                let RWKVBlockState {
+                    att_state,
+                    ffn_state,
+                } = state;
+                let x_ = block.ln1.layer_norm(x.clone());
+                let (dx, att_state) = block.att.forward(x_, att_state.clone());
+                let x = x + dx;
 
-            let x_ = block.ln2.layer_norm(x.clone());
-            let (dx, ffn_state) = block.ffn.forward(x_, ffn_state.clone());
-            let x = x + dx;
+                let x_ = block.ln2.layer_norm(x.clone());
+                let (dx, ffn_state) = block.ffn.forward(x_, ffn_state.clone());
+                let x = x + dx;
 
-            *state = RWKVBlockState {
-                att_state,
-                ffn_state,
-            };
-            x
-        });
+                *state = RWKVBlockState {
+                    att_state,
+                    ffn_state,
+                };
+                x
+            });
 
         let x = self.ln_out.layer_norm(x);
         let x = matmul(self.head.clone(), x); // "attention" head

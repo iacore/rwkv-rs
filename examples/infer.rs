@@ -1,6 +1,6 @@
 use anyhow::Context;
 use dfdx::prelude::*;
-use rwkv_rs::{sample_token, RWKV_430m, RWKVState};
+use rwkv_rs::{sample_token, RWKVState, RWKV_430m};
 use tokenizers::Tokenizer;
 
 fn main() -> anyhow::Result<()> {
@@ -18,6 +18,7 @@ fn main() -> anyhow::Result<()> {
     let prompt = "In a shocking finding, scientist discovered";
 
     let dev: Cpu = Default::default();
+
     let mut state = RWKVState::default();
     let mut model = RWKV_430m::zeros(&dev);
     model
@@ -33,14 +34,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut rng = rand::rngs::OsRng::default();
-    
+
     use std::io::Write;
     let mut stdout = std::io::stdout();
     write!(stdout, "{prompt}")?;
     stdout.flush()?;
 
-
-    for i in 0..100 {
+    for _i in 0..100 {
         let Some(probs_taken) = probs.take() else { panic!() };
         let token_id = sample_token(&mut rng, probs_taken, 1.0, 0.8);
         // end of text

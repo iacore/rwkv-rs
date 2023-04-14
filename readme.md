@@ -1,26 +1,21 @@
-Warning: broken
+Warning: experimental
 
-ML in Rust is a waste of time
-Python is much better
+dfdx cannot yet utilize 100% of your GPU. As a result, this is slower than ggml or numba/numpy.
 
 ## Usage
 
-1. get model params
-First, dump the model with inspectxxxx.py
-TK
-
-token
-
-20B_tokenizer.json
+1. get model
 
 
-Then,
+```shell
+wget2 https://huggingface.co/BlinkDL/rwkv-4-pile-430m/resolve/main/RWKV-4-Pile-430M-20220808-8066.pth
 
-```rs
-TK
+# get convert.py from https://github.com/iacore/rwkv-np
+python convert.py RWKV-4-Pile-430M-20220808-8066.pth
 ```
 
-## To do
+2. infer
 
-- replace assert with error
-- remove device jankyness
+```shell
+cargo run --example infer --release
+```
