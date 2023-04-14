@@ -6,7 +6,10 @@ use dfdx::prelude::*;
 
 use ::safetensors::SafeTensors;
 use memmap2::MmapOptions;
-use rand::distributions::Uniform;
+use rand::{
+    distributions::{Uniform, WeightedIndex},
+    prelude::Distribution,
+};
 use tracing::trace;
 use Tensor1D as V;
 use Tensor2D as M;
@@ -150,8 +153,17 @@ impl<const N: usize> LN<N> {
     pub fn layer_norm(&self, x: V<N>) -> V<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
-        
-        (x.clone() - x.clone().mean().broadcast()) * w / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast() + b
+        let xm = x.clone().mean::<Rank0, _>().array();
+        let xee2 = x.clone() - xm;
+        let x2 = (xee2.clone().square().mean::<Rank0, _>().array() + unsafe { NUMPY_MAGIC_EPSILON }).sqrt();
+        return w * (xee2 / x2) + b;
+
+        // let w = self.weight.clone();
+        // let b = self.bias.clone();
+
+        // (x.clone() - x.clone().mean().broadcast()) * w
+        //     / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast()
+        //     + b
     }
 }
 
@@ -304,32 +316,58 @@ impl<
         let x = matmul(self.head.clone(), x); // "attention" head
         trace!(x = summarize(&x), "after head");
 
+        let e_x = exp(x.clone() - x.max().broadcast());
+        let probs = e_x.clone() / e_x.sum().broadcast();
+
         // softmax but not quite
-        let probs = x.softmax();
+        // let probs = x.softmax();
 
         // let mut sorted_probs = probs.array();
         // sorted_probs.sort_by(|a, b| b.total_cmp(a));
         // trace!(probs = summarize(&probs), "sorted_probs={:?}", &sorted_probs[0..10]);
 
-        let a = probs.array();
-        let sorted_ids = argsort_desc(&a);
-        let max10_ids: Vec<usize> = sorted_ids
-            .into_iter()
-            .enumerate()
-            .filter(|(_, shi)| *shi < 10)
-            .map(|(i, _)| i)
-            .collect();
-        trace!(?max10_ids);
+        // let a = probs.array();
+        // let sorted_ids = argsort_desc(&a);
+        // let max10_ids: Vec<usize> = sorted_ids
+        //     .into_iter()
+        //     .enumerate()
+        //     .filter(|(_, shi)| *shi < 10)
+        //     .map(|(i, _)| i)
+        //     .collect();
+        // trace!(?max10_ids);
 
         (probs, state)
     }
 }
 
-/// np.argsort + reverse
-pub fn argsort_desc<T: PartialOrd>(data: &[T]) -> Vec<usize> {
-    let mut indices = (0..data.len()).collect::<Vec<_>>();
-    indices.sort_by(|&j, &i| data[i].partial_cmp(&data[j]).unwrap());
-    indices
+fn sort_reverse<const N: usize>(x: V<N>) -> V<N> {
+    let dev = x.device();
+    let mut x = x.array();
+    x.sort_unstable_by(|a, b| f32::total_cmp(b, a));
+    dev.tensor(x)
+}
+
+fn cumsum<const N: usize>(x: V<N>) -> V<N> {
+    let dev = x.device();
+    let mut x = x.array();
+    for i in 1..x.len() {
+        x[i] += x[i - 1];
+    }
+    dev.tensor(x)
+}
+
+fn argmax<const N: usize>(x: Tensor<Rank1<N>, bool, Cpu, NoneTape>) -> usize {
+    let x = x.array();
+    x.iter().enumerate().find(|x| *x.1).unwrap().0
+}
+
+fn random_choice<const N: usize>(
+    rng: &mut impl rand::Rng,
+    probs: Tensor<(Const<N>,), f32, Cpu>,
+) -> usize {
+    let weights = probs.array();
+    let dist = WeightedIndex::new(&weights).unwrap();
+    dist.sample(rng)
 }
 
 /// Get the token
@@ -347,46 +385,17 @@ pub fn sample_token<const N_VOCAB: usize>(
     temperature: f32,
     top_p: f32,
 ) -> usize {
-    let mut sorted_probs: [f32; N_VOCAB] = probs.array();
-    sorted_probs.sort_by(|a, b| b.partial_cmp(a).unwrap());
-
-    let mut cum: [f32; N_VOCAB] = [0.; N_VOCAB];
-    for i in 0..cum.len() {
-        if i == 0 {
-            cum[i] = sorted_probs[i];
-        } else {
-            cum[i] = sorted_probs[i] + cum[i - 1];
-        }
-    }
-
-    let cutoff_i = cum
-        .iter()
-        .enumerate()
-        .filter(|(_, x)| *x > &top_p)
-        .max_by_key(|(i, _)| *i)
-        .map(|(i, _)| i)
-        .unwrap();
-    let cutoff = sorted_probs[cutoff_i];
-
+    let sorted_probs = sort_reverse(probs.clone());
+    let cumulative_probs = cumsum(sorted_probs.clone());
+    let cutoff = sorted_probs[[argmax(gt(
+        &cumulative_probs,
+        &dev.tensor(top_p).broadcast(),
+    ))]];
     let probs = probs
         .lt(&dev.tensor(cutoff).broadcast())
-        .choose(dev.tensor(0.).broadcast(), probs);
-
-    let probs = powf(probs, 1.0 / temperature);
-
-    let sum_p: f32 = probs.clone().sum().array();
-
-    let cutoff = rng.sample(Uniform::new(0., 1.)) * sum_p;
-
-    let mut acc = 0.;
-    let array = probs.array();
-    for (i, p) in array.iter().enumerate() {
-        acc += p;
-        if acc > cutoff {
-            return i;
-        }
-    }
-    unreachable!("acc={acc} {array:?}")
+        .choose(dev.zeros(), probs);
+    let probs = probs.powf(1.0 / temperature);
+    random_choice(rng, probs)
 }
 
 #[derive(Debug, thiserror::Error)]

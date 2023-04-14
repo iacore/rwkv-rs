@@ -44,6 +44,7 @@ fn main() -> anyhow::Result<()> {
     for &token in encoded.get_ids() {
         let (probs_, state_) = model.forward(&dev, token as usize, state.clone());
         probs = Some(probs_);
+        state = state_;
     }
     // File::create("state.ffn_state.raw")?
     //     .write_all(unsafe { cast_slice_to_u8(&state.ffn_state.array()) })?;
