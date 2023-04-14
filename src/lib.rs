@@ -134,9 +134,8 @@ pub struct LN<const N: usize> {
     pub bias: V<N>,
 }
 
-/// tested with N_EMBED=1024 N_LAYER=24
-// 0.000000049 to 0.000000063
-pub static mut NUMPY_MAGIC_EPSILON: f32 = 0.00001;
+// can also be zero
+const STD_EPSILON: f32 = 0.00001;
 
 impl<const N: usize> LN<N> {
     pub fn zeros(dev: &Cpu) -> Self {
@@ -149,8 +148,8 @@ impl<const N: usize> LN<N> {
     pub fn layer_norm(&self, x: V<N>) -> V<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
-        
-        ((x.clone() - x.clone().mean().broadcast()) / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast()) * w + b
+
+        x.normalize(STD_EPSILON) * w + b
     }
 }
 
@@ -174,12 +173,12 @@ impl<const N_EMBED: usize, const N_EMBED_TIMES_4: usize> RWKVBlock<N_EMBED, N_EM
 }
 
 #[derive(Clone)]
-pub struct RWKVState<const N: usize> {
+pub struct RWKVBlockState<const N: usize> {
     pub att_state: ATTState<N>,
     pub ffn_state: V<N>,
 }
 
-impl<const N: usize> RWKVState<N> {
+impl<const N: usize> RWKVBlockState<N> {
     pub fn zeros(dev: &Cpu) -> Self {
         Self {
             att_state: ATTState::zeros(dev),
@@ -187,6 +186,14 @@ impl<const N: usize> RWKVState<N> {
         }
     }
 }
+
+impl<const N: usize> Default for RWKVBlockState<N> {
+    fn default() -> Self {
+        Self::zeros(&Cpu::default())
+    }
+}
+
+pub type RWKVState<const N_LAYER: usize, const N_EMBED: usize> = [RWKVBlockState<N_EMBED>; N_LAYER];
 
 #[derive(Clone)]
 pub struct RWKV<
@@ -232,12 +239,12 @@ impl<
             head,
         } = self;
         _cp(&xs, "emb.weight", emb)?;
-        _cp(&xs, "head.weight", head)?;
         _cp_ln(&xs, "blocks.0.ln0", ln_in)?;
-        _cp_ln(&xs, "ln_out", ln_out)?;
         for (i, block) in blocks.into_iter().enumerate() {
             _cp_block(&xs, &format!("blocks.{i}"), block)?;
         }
+        _cp_ln(&xs, "ln_out", ln_out)?;
+        _cp(&xs, "head.weight", head)?;
 
         Ok(())
     }
@@ -246,38 +253,34 @@ impl<
         &self,
         dev: &Cpu,
         token: usize,
-        state: RWKVState<N_EMBED>,
-    ) -> (V<N_VOCAB>, RWKVState<N_EMBED>) {
+        mut states: RWKVState<N_LAYER, N_EMBED>,
+    ) -> (V<N_VOCAB>, RWKVState<N_LAYER, N_EMBED>) {
         let x = self.emb.clone().select(dev.tensor(token));
         let x = self.ln_in.layer_norm(x);
 
-        let (x, state) = self.blocks.iter().fold(
-            (x, state),
-            |(
-                x,
-                RWKVState {
+        let x = self
+            .blocks
+            .iter()
+            .zip(&mut states)
+            .fold(x, |x, (block, state)| {
+                let RWKVBlockState {
                     att_state,
                     ffn_state,
-                },
-            ),
-             block| {
+                } = state;
                 let x_ = block.ln1.layer_norm(x.clone());
-                let (dx, att_state) = block.att.forward(x_, att_state);
+                let (dx, att_state) = block.att.forward(x_, att_state.clone());
                 let x = x + dx;
 
                 let x_ = block.ln2.layer_norm(x.clone());
-                let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state);
+                let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state.clone());
                 let x = x + dx;
 
-                (
-                    x,
-                    RWKVState {
-                        att_state,
-                        ffn_state,
-                    },
-                )
-            },
-        );
+                *state = RWKVBlockState {
+                    att_state,
+                    ffn_state,
+                };
+                x
+            });
 
         let x = self.ln_out.layer_norm(x);
         let x = matmul(self.head.clone(), x); // "attention" head
@@ -286,10 +289,9 @@ impl<
         let e_x = exp(x.clone() - x.max().broadcast());
         let probs = e_x.clone() / e_x.sum().broadcast();
 
-        (probs, state)
+        (probs, states)
     }
 }
-
 
 fn sort_reverse<const N: usize>(x: V<N>) -> V<N> {
     let dev = x.device();
@@ -350,7 +352,6 @@ pub fn sample_token<const N_VOCAB: usize>(
     let probs = probs.powf(1.0 / temperature);
     random_choice(rng, probs)
 }
-
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -415,9 +416,9 @@ fn _cp_block<const N_EMBED: usize, const N_EMBED_TIMES_4: usize>(
     Ok(())
 }
 
-fn _cp_ln<const N: usize>(xs: &SafeTensors, prefix: &str, ln_in: &mut LN<N>) -> Result<(), Error> {
-    _cp(xs, &format!("{prefix}.weight"), &mut ln_in.weight)?;
-    _cp(xs, &format!("{prefix}.bias"), &mut ln_in.bias)?;
+fn _cp_ln<const N: usize>(xs: &SafeTensors, prefix: &str, ln: &mut LN<N>) -> Result<(), Error> {
+    _cp(xs, &format!("{prefix}.weight"), &mut ln.weight)?;
+    _cp(xs, &format!("{prefix}.bias"), &mut ln.bias)?;
     Ok(())
 }
 
