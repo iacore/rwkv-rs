@@ -437,8 +437,7 @@ dependencies = [
 [[package]]
 name = "dfdx"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "514b1692b4c5c095d4d457ad06c4bbcaa53a1d5dc8c4765b9cbc1f9b6252c4f4"
+source = "git+https://github.com/coreylowman/dfdx?branch=main#94795002ce508478e414733da86c1133b9a5afa2"
 dependencies = [
  "cudarc",
  "matrixmultiply",

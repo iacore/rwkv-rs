@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
         .load_safetensors("RWKV-4-Pile-430M-20220808-8066.safetensors")
         .context("Load model")?;
 
-    let encoded = tokenizer.encode(prompt, false).unwrap();
+    let encoded = tokenizer.encode(prompt, true).unwrap();
     let mut probs = None;
     for &token in encoded.get_ids() {
         let (probs_, state_) = model.forward(&dev, token as usize, state.clone());
@@ -34,23 +34,28 @@ fn main() -> anyhow::Result<()> {
         probs = Some(probs_);
     }
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng::default();
+    
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    write!(stdout, "{prompt}")?;
+    stdout.flush()?;
 
-    print!("{prompt}");
+
     for i in 0..16 {
-        if let Some(probs_taken) = probs.take() {
-            let token_id = sample_token(&dev, &mut rng, probs_taken, 0.9, 0.85);
-            // end of text
-            if token_id == 0 {
-                break;
-            }
-            let word = tokenizer.decode(vec![token_id as u32], true).unwrap();
-            print!("{word}");
-
-            let (probs_, state_) = model.forward(&dev, token_id, state.clone());
-            state = state_;
-            probs = Some(probs_);
+        let Some(probs_taken) = probs.take() else { panic!() };
+        let token_id = sample_token(&dev, &mut rng, probs_taken, 1.0, 0.8);
+        // end of text
+        if token_id == 0 {
+            break;
         }
+        let word = tokenizer.decode(vec![token_id as u32], true).unwrap();
+        write!(stdout, "{word}")?;
+        stdout.flush()?;
+
+        let (probs_, state_) = model.forward(&dev, token_id, state.clone());
+        state = state_;
+        probs = Some(probs_);
     }
     println!();
 
