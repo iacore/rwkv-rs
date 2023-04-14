@@ -19,3 +19,7 @@ python convert.py RWKV-4-Pile-430M-20220808-8066.pth
 ```shell
 cargo run --example infer --release
 ```
+
+***
+
+In theory, using bigger RWKV is also possible if you got enough memory. Just remember to change the Rust model type and model path in `examples/infer.rs`.
