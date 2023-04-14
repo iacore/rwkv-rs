@@ -1,8 +1,6 @@
-use std::env;
-
 use anyhow::Context;
 use dfdx::prelude::*;
-use rwkv_rs::{sample_token, RWKVBlockState, RWKV_430m, RWKVState};
+use rwkv_rs::{sample_token, RWKV_430m, RWKVState};
 use tokenizers::Tokenizer;
 
 fn main() -> anyhow::Result<()> {
@@ -29,7 +27,7 @@ fn main() -> anyhow::Result<()> {
     let encoded = tokenizer.encode(prompt, true).unwrap();
     let mut probs = None;
     for &token in encoded.get_ids() {
-        let (probs_, state_) = model.forward(&dev, token as usize, state.clone());
+        let (probs_, state_) = model.forward(token as usize, state.clone());
         state = state_;
         probs = Some(probs_);
     }
@@ -42,9 +40,9 @@ fn main() -> anyhow::Result<()> {
     stdout.flush()?;
 
 
-    for i in 0..16 {
+    for i in 0..100 {
         let Some(probs_taken) = probs.take() else { panic!() };
-        let token_id = sample_token(&dev, &mut rng, probs_taken, 1.0, 0.8);
+        let token_id = sample_token(&mut rng, probs_taken, 1.0, 0.8);
         // end of text
         if token_id == 0 {
             break;
@@ -53,7 +51,7 @@ fn main() -> anyhow::Result<()> {
         write!(stdout, "{word}")?;
         stdout.flush()?;
 
-        let (probs_, state_) = model.forward(&dev, token_id, state.clone());
+        let (probs_, state_) = model.forward(token_id, state.clone());
         state = state_;
         probs = Some(probs_);
     }

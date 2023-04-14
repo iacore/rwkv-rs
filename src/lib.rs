@@ -113,7 +113,7 @@ impl<const N: usize, const N1: usize> FFN<N, N1> {
             wr: dev.zeros(),
         }
     }
-    pub fn forward(&self, dev: &Cpu, x: V<N>, last_x: V<N>) -> (V<N>, V<N>) {
+    pub fn forward(&self, x: V<N>, last_x: V<N>) -> (V<N>, V<N>) {
         let mix_k = self.mix_k.clone();
         let mix_r = self.mix_r.clone();
         let wk = self.wk.clone();
@@ -122,7 +122,8 @@ impl<const N: usize, const N1: usize> FFN<N, N1> {
 
         let k = matmul(wk, mix(mix_k, last_x.clone(), x.clone()));
         let r = matmul(wr, mix(mix_r, last_x, x.clone()));
-        let vk = matmul(wv, maximum(k, dev.zeros()).square());
+        let zeros = k.device().zeros();
+        let vk = matmul(wv, maximum(k, zeros).square());
 
         (sigmoid(r) * vk, x)
     }
@@ -251,36 +252,31 @@ impl<
 
     pub fn forward(
         &self,
-        dev: &Cpu,
         token: usize,
         mut states: RWKVState<N_LAYER, N_EMBED>,
     ) -> (V<N_VOCAB>, RWKVState<N_LAYER, N_EMBED>) {
-        let x = self.emb.clone().select(dev.tensor(token));
+        let x = self.emb.clone().select(Cpu::default().tensor(token));
         let x = self.ln_in.layer_norm(x);
 
-        let x = self
-            .blocks
-            .iter()
-            .zip(&mut states)
-            .fold(x, |x, (block, state)| {
-                let RWKVBlockState {
-                    att_state,
-                    ffn_state,
-                } = state;
-                let x_ = block.ln1.layer_norm(x.clone());
-                let (dx, att_state) = block.att.forward(x_, att_state.clone());
-                let x = x + dx;
+        let x = self.blocks.iter().zip(&mut states).fold(x, |x, (block, state)| {
+            let RWKVBlockState {
+                att_state,
+                ffn_state,
+            } = state;
+            let x_ = block.ln1.layer_norm(x.clone());
+            let (dx, att_state) = block.att.forward(x_, att_state.clone());
+            let x = x + dx;
 
-                let x_ = block.ln2.layer_norm(x.clone());
-                let (dx, ffn_state) = block.ffn.forward(dev, x_, ffn_state.clone());
-                let x = x + dx;
+            let x_ = block.ln2.layer_norm(x.clone());
+            let (dx, ffn_state) = block.ffn.forward(x_, ffn_state.clone());
+            let x = x + dx;
 
-                *state = RWKVBlockState {
-                    att_state,
-                    ffn_state,
-                };
-                x
-            });
+            *state = RWKVBlockState {
+                att_state,
+                ffn_state,
+            };
+            x
+        });
 
         let x = self.ln_out.layer_norm(x);
         let x = matmul(self.head.clone(), x); // "attention" head
@@ -334,12 +330,13 @@ fn random_choice<const N: usize>(
 /// temperature=1.0
 /// top_p=0.85
 pub fn sample_token<const N_VOCAB: usize>(
-    dev: &Cpu,
     rng: &mut impl rand::Rng,
     probs: V<N_VOCAB>,
     temperature: f32,
     top_p: f32,
 ) -> usize {
+    let dev = probs.device();
+
     let sorted_probs = sort_reverse(probs.clone());
     let cumulative_probs = cumsum(sorted_probs.clone());
     let cutoff = sorted_probs[[argmax(gt(
