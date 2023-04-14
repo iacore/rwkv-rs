@@ -6,13 +6,13 @@ use rwkv_rs::{sample_token, RWKVState, RWKV_430m};
 use tokenizers::Tokenizer;
 
 fn main() -> anyhow::Result<()> {
-    let n = env::var("NUMPY_MAGIC")?;
-    let n: f32 = n.parse()?;
-    unsafe { rwkv_rs::NUMPY_MAGIC_EPSILON = n };
+    if let Ok(n) = env::var("NUMPY_MAGIC") {
+        let n: f32 = n.parse()?;
+        unsafe { rwkv_rs::NUMPY_MAGIC_EPSILON = n };
+    }
 
     // todo: arg
     // magic, temp, top_p
-
 
     let tokenizer = Tokenizer::from_file("20B_tokenizer.json").unwrap();
 

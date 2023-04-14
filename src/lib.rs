@@ -136,7 +136,7 @@ pub struct LN<const N: usize> {
 
 /// tested with N_EMBED=1024 N_LAYER=24
 // 0.000000049 to 0.000000063
-pub static mut NUMPY_MAGIC_EPSILON: f32 = 0.000000053;
+pub static mut NUMPY_MAGIC_EPSILON: f32 = 0.00001;
 
 impl<const N: usize> LN<N> {
     pub fn zeros(dev: &Cpu) -> Self {
@@ -150,7 +150,7 @@ impl<const N: usize> LN<N> {
         let w = self.weight.clone();
         let b = self.bias.clone();
         
-        (x.clone() - x.clone().mean().broadcast()) * w / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast() + b
+        ((x.clone() - x.clone().mean().broadcast()) / sqrt(x.var() + unsafe { NUMPY_MAGIC_EPSILON }).broadcast()) * w + b
     }
 }
 
@@ -431,18 +431,18 @@ fn _cp<S: Shape, D: CopySlice<f32>, T>(
         .filter(|x| *x != 1)
         .collect();
 
-    let shape_actual = &tensor.shape();
+    let shape_actual = tensor.shape().concrete();
     for i in 0..S::NUM_DIMS {
-        assert_eq!(shape_actual.concrete()[i], shape_expected[i]);
+        assert_eq!(shape_actual[i], shape_expected[i]);
     }
 
     let data = tensor_view.data();
-    tensor.copy_from(unsafe { align_to_f32(data) });
+    tensor.copy_from(unsafe { slice_to_f32(data) });
     Ok(())
 }
 
 /// data may be unaligned
-unsafe fn align_to_f32(data: &[u8]) -> &[f32] {
+unsafe fn slice_to_f32(data: &[u8]) -> &[f32] {
     std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4)
 }
 
